@@ -1,0 +1,26 @@
+- name: shopping_tool_agent
+  _target_: shopping_grpo.training.grpo.adapter.agent_loop.ShoppingToolAgentLoop
+  base_url: ${oc.env:SHOPSIM_BASE_URL,http://127.0.0.1:5700}
+  timeout: 60
+  max_steps: 35
+  reward_length_shaping_enable: ${oc.env:SHOPPING_LENGTH_SHAPING_ENABLE,false}
+  reward_length_soft_threshold: ${oc.env:SHOPPING_SOFT_LENGTH_THRESHOLD,20}
+  reward_length_penalty_per_step: ${oc.env:SHOPPING_LENGTH_PENALTY_PER_STEP,0.01}
+  reward_length_max_penalty: ${oc.env:SHOPPING_MAX_LENGTH_PENALTY,0.15}
+  # Public-state process verification is opt-in. Reward v3 stays unchanged.
+  gigpo_process_enable: ${oc.env:SHOPPING_GIGPO_PROCESS_ENABLE,false}
+  gigpo_anchor_mode: ${oc.env:SHOPPING_GIGPO_ANCHOR_MODE,structured}
+  gigpo_potential_gamma: ${oc.env:SHOPPING_GIGPO_GAMMA,1.0}
+  gigpo_potential_clip: ${oc.env:SHOPPING_GIGPO_POTENTIAL_CLIP,0.25}
+  required_environment_version: shopsimulator-environment-v2.1
+  reward_mode: constraint_aware
+  context_window_tokens: 24576
+  context_generation_reserve_tokens: 512
+  context_safety_margin_tokens: 512
+  context_input_budget_tokens: 16384
+  context_preserve_recent_groups: 1
+  context_compaction_enable: false
+  observation_token_budget: 1536
+  observation_detail_token_budget: 4096
+  observation_generic_token_budget: 768
+  observation_search_top_k: 20

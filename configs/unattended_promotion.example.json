@@ -1,0 +1,167 @@
+{
+  "schema_version": "shopping-unattended-promotion-v1",
+  "context_hygiene": {
+    "goal_path": "../../output/shopping_agent_resume_evidence_20260809/ACTIVE_GOAL_V2_35H.md",
+    "git_worktree": "..",
+    "gpu_inventory_path": "../runtime/gpu-inventory.json",
+    "interval_seconds": 3600,
+    "max_state_bytes": 204800,
+    "max_events": 50,
+    "max_attempts_per_branch": 3,
+    "compaction_marker": "../runtime/CONTEXT_COMPACTED"
+  },
+  "queues": [
+    {
+      "id": "quality-origin-attempt-01",
+      "initial_state": "READY",
+      "promotion_stage": "origin",
+      "prerequisites": [],
+      "resource_class": "GPU_ELIGIBLE",
+      "workload_kind": "grpo_canary",
+      "prerequisite_decision_sha256": {},
+      "requires": [
+        {"type": "executable", "name": "bash"},
+        {"type": "path", "path": "../scripts/run_credit_ablation_guarded.sh", "access": "rx"}
+      ],
+      "launch": {
+        "argv": ["bash", "scripts/run_credit_ablation_guarded.sh", "start"],
+        "cwd": "..",
+        "env": {"CREDIT_RUN_ID": "quality-origin-attempt-01"},
+        "owned_process_receipt": "../runtime/quality-origin-attempt-01/owned-pids/supervisor.pid",
+        "allow_execute": false,
+        "command_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "markers": {
+        "complete": "../runtime/quality-origin-attempt-01/COMPLETE",
+        "failed": "../runtime/quality-origin-attempt-01/FAILED"
+      },
+      "resources": {
+        "ports": [18501],
+        "gpu_uuids": ["GPU-REPLACE-WITH-INVENTORIED-UUID"]
+      },
+      "checkpoint": {
+        "input": "../checkpoints/frozen-parent",
+        "expected_output": "../runtime/quality-origin-attempt-01/checkpoint"
+      },
+      "attempt_lineage": {
+        "attempt_id": "quality-origin-attempt-01",
+        "branch_id": "quality-origin",
+        "parent_attempt_id": "frozen-parent-attempt",
+        "parent_checkpoint": "../checkpoints/frozen-parent"
+      },
+      "preflight": {
+        "authentication": {"type": "none"},
+        "directories": [
+          {"path": "..", "access": "rx"},
+          {"path": "../runtime", "access": "rwx"}
+        ],
+        "disk": {"path": "../runtime", "min_free_bytes": 10737418240},
+        "ports": [{"host": "127.0.0.1", "port": 18501}],
+        "checkpoint_resume": {"mode": "fresh"},
+        "heartbeat": {
+          "path": "../runtime/quality-origin-attempt-01/status.log",
+          "stale_seconds": 600,
+          "startup_grace_seconds": 300
+        },
+        "http_probes": [
+          {"url": "http://127.0.0.1:5700/health", "expected_status": [200], "timeout_seconds": 2}
+        ]
+      },
+      "analysis": {
+        "conditions": [
+          {
+            "type": "json_value",
+            "path": "../runtime/quality-origin-attempt-01/analysis.json",
+            "pointer": "/target_badcase/net_fixed",
+            "op": "gte",
+            "expected": 1
+          },
+          {
+            "type": "json_value",
+            "path": "../runtime/quality-origin-attempt-01/analysis.json",
+            "pointer": "/regressions/wrong_purchase",
+            "op": "lte",
+            "expected": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "quality-held-out-attempt-01",
+      "initial_state": "READY",
+      "promotion_stage": "held_out",
+      "prerequisites": ["quality-origin-attempt-01"],
+      "resource_class": "GPU_ELIGIBLE",
+      "workload_kind": "grpo_canary",
+      "prerequisite_decision_sha256": {
+        "quality-origin-attempt-01": "32c3bdb08f1c66eb8b03bb63b873e4d8bb3a263f29cebf2c55b767ec8b912377"
+      },
+      "requires": [
+        {"type": "executable", "name": "bash"},
+        {"type": "path", "path": "../scripts/run_credit_ablation_guarded.sh", "access": "rx"}
+      ],
+      "launch": {
+        "argv": ["bash", "scripts/run_credit_ablation_guarded.sh", "start"],
+        "cwd": "..",
+        "env": {"CREDIT_RUN_ID": "quality-held-out-attempt-01"},
+        "owned_process_receipt": "../runtime/quality-held-out-attempt-01/owned-pids/supervisor.pid",
+        "allow_execute": false,
+        "command_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "markers": {
+        "complete": "../runtime/quality-held-out-attempt-01/COMPLETE",
+        "failed": "../runtime/quality-held-out-attempt-01/FAILED"
+      },
+      "resources": {
+        "ports": [18502],
+        "gpu_uuids": ["GPU-REPLACE-WITH-INVENTORIED-UUID"]
+      },
+      "checkpoint": {
+        "input": "../runtime/quality-origin-attempt-01/checkpoint",
+        "expected_output": "../runtime/quality-held-out-attempt-01/checkpoint"
+      },
+      "attempt_lineage": {
+        "attempt_id": "quality-held-out-attempt-01",
+        "branch_id": "quality-held-out",
+        "parent_attempt_id": "quality-origin-attempt-01",
+        "parent_checkpoint": "../runtime/quality-origin-attempt-01/checkpoint"
+      },
+      "preflight": {
+        "authentication": {"type": "none"},
+        "directories": [
+          {"path": "..", "access": "rx"},
+          {"path": "../runtime", "access": "rwx"}
+        ],
+        "disk": {"path": "../runtime", "min_free_bytes": 10737418240},
+        "ports": [{"host": "127.0.0.1", "port": 18502}],
+        "checkpoint_resume": {"mode": "fresh"},
+        "heartbeat": {
+          "path": "../runtime/quality-held-out-attempt-01/status.log",
+          "stale_seconds": 600,
+          "startup_grace_seconds": 300
+        },
+        "http_probes": [
+          {"url": "http://127.0.0.1:5700/health", "expected_status": [200], "timeout_seconds": 2}
+        ]
+      },
+      "analysis": {
+        "conditions": [
+          {
+            "type": "json_value",
+            "path": "../runtime/quality-held-out-attempt-01/analysis.json",
+            "pointer": "/target_badcase/net_fixed",
+            "op": "gte",
+            "expected": 1
+          },
+          {
+            "type": "json_value",
+            "path": "../runtime/quality-held-out-attempt-01/analysis.json",
+            "pointer": "/regressions/wrong_purchase",
+            "op": "lte",
+            "expected": 0
+          }
+        ]
+      }
+    }
+  ]
+}

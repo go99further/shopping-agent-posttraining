@@ -1,0 +1,369 @@
+--- a/verl/utils/vllm/utils.py
++++ b/verl/utils/vllm/utils.py
+@@ -15,6 +15,7 @@
+ 
+ from msgspec import field
+ from packaging import version as vs
++import torch
+ 
+ try:
+     from vllm.lora.lora_model import LoRAModel
+@@ -33,9 +34,87 @@
+     lora_tensors: dict = field(default=None)
+ 
+ 
++def expand_grouped_merged_lora_slices(layer, lora_a, lora_b):
++    """Expand grouped PEFT LoRA tensors to vLLM packed-layer slices.
++
++    Qwen3.5's Hugging Face linear-attention block exposes two adapter
++    modules, ``in_proj_qkv`` and ``in_proj_z``.  vLLM packs the same base
++    projection into four physical slices (q, k, v, z).  The regular vLLM
++    loader assumes one adapter tensor per physical slice, so it attempts to
++    copy the 6144-row qkv LoRA-B tensor into the first 2048-row slice.
++
++    Split only when the number of PEFT groups differs from the number of
++    physical slices.  Every source row must be consumed exactly once; this
++    preserves the adapter numerically and fails closed on unknown layouts.
++    """
++    if not isinstance(lora_a, (list, tuple)) or not isinstance(lora_b, (list, tuple)):
++        return lora_a, lora_b
++    if len(lora_a) != len(lora_b):
++        raise ValueError(
++            f"Mismatched grouped LoRA tensors: {len(lora_a)} A tensors and {len(lora_b)} B tensors"
++        )
++    if len(lora_a) == layer.n_slices:
++        return lora_a, lora_b
++
++    output_sizes = tuple(int(size) for size in layer.base_layer.output_sizes)
++    if len(output_sizes) != layer.n_slices:
++        raise ValueError(
++            f"Invalid packed-layer metadata: {len(output_sizes)} output sizes for {layer.n_slices} slices"
++        )
++
++    expanded_a = []
++    expanded_b = []
++    slice_index = 0
++    for group_index, (group_a, group_b) in enumerate(zip(lora_a, lora_b)):
++        if group_a is None or group_b is None:
++            raise ValueError(
++                "Cannot infer physical slice coverage for a missing grouped LoRA tensor "
++                f"at group {group_index}"
++            )
++        if not torch.is_tensor(group_a) or not torch.is_tensor(group_b) or group_b.ndim != 2:
++            raise TypeError(f"Unsupported grouped LoRA tensor types at group {group_index}")
++
++        group_rows = int(group_b.shape[0])
++        row_offset = 0
++        while row_offset < group_rows:
++            if slice_index >= len(output_sizes):
++                raise ValueError(
++                    f"Grouped LoRA-B tensor {group_index} has {group_rows} rows beyond packed-layer capacity"
++                )
++            slice_rows = output_sizes[slice_index]
++            next_offset = row_offset + slice_rows
++            if next_offset > group_rows:
++                raise ValueError(
++                    f"Grouped LoRA-B tensor {group_index} with {group_rows} rows cannot be split at "
++                    f"packed slice {slice_index} of size {slice_rows}"
++                )
++            expanded_a.append(group_a)
++            expanded_b.append(group_b[row_offset:next_offset, :])
++            row_offset = next_offset
++            slice_index += 1
++
++    if slice_index != layer.n_slices:
++        raise ValueError(
++            f"Grouped LoRA tensors cover {slice_index} of {layer.n_slices} packed-layer slices"
++        )
++    return expanded_a, expanded_b
++
++
+ class VLLMHijack:
+     @staticmethod
+     def hijack():
++        from vllm.lora.layers.column_parallel_linear import MergedColumnParallelLinearWithLoRA
++
++        if not getattr(MergedColumnParallelLinearWithLoRA, "_verl_grouped_slice_patch", False):
++            original_set_lora = MergedColumnParallelLinearWithLoRA.set_lora
++
++            def set_lora_with_grouped_slices(self, index, lora_a, lora_b):
++                lora_a, lora_b = expand_grouped_merged_lora_slices(self, lora_a, lora_b)
++                return original_set_lora(self, index, lora_a, lora_b)
++
++            MergedColumnParallelLinearWithLoRA.set_lora = set_lora_with_grouped_slices
++            MergedColumnParallelLinearWithLoRA._verl_grouped_slice_patch = True
++
+         def hijack__load_adapter(self, lora_request: TensorLoRARequest) -> LoRAModel:
+             """
+             based on vllm.lora.worker_manager.WorkerLoRAManager._load_adapter, support load adapter with lora tensors
+--- a/verl/utils/fsdp_utils.py
++++ b/verl/utils/fsdp_utils.py
+@@ -740,7 +740,11 @@
+     Returns:
+         str: Transformed parameter key for base layer.
+     """
+-    stacked_params = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
++    # vLLM represents Qwen3.5's depthwise causal convolution with a
++    # ColumnParallelLinear and consequently wraps it in ``base_layer`` when
++    # LoRA is enabled.  HF/PEFT does not adapt Conv1d, so it is absent from
++    # ``target_modules`` and needs this explicit base-sync mapping.
++    stacked_params = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj", "conv1d"]
+     if k.endswith(".weight"):
+         module_k = k[: -len(".weight")]
+         if check_exclude_modules(peft_config, module_k):
+--- a/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py
++++ b/verl/workers/rollout/vllm_rollout/bucketed_weight_transfer.py
+@@ -45,7 +45,12 @@
+ def rebuild_ipc(handle: tuple[Callable, tuple], device_id: int | None = None) -> torch.Tensor:
+     func, args = handle
+     list_args = list(args)
+-    if device_id is not None:
++    if device_id is not None and getattr(func, "__name__", "") == "rebuild_cuda_tensor":
++        if len(list_args) <= 6:
++            raise ValueError(
++                "Malformed CUDA IPC reduction: rebuild_cuda_tensor requires "
++                f"at least 7 arguments, got {len(list_args)}"
++            )
+         # the key is to change device id to the current device id
+         # in case two processes have different CUDA_VISIBLE_DEVICES
+         list_args[6] = device_id
+@@ -217,12 +222,22 @@
+         """Send a weight larger than the bucket size via cuda ipc or share memory."""
+         logger.debug(f"Direct sending large weight {name}({weight.shape}, {weight.dtype})")
+         # TODO: support fallback to shared memory
+-        handle = reduce_tensor(weight)
++        # FSDP can expose full parameters on CPU even when the communication
++        # bucket itself is CUDA-backed.  Reducing that CPU tensor produces a
++        # rebuild_tensor descriptor rather than a CUDA IPC descriptor, and the
++        # receiver cannot remap its device id.  Move only the exceptional
++        # over-sized tensor to the bucket device so this path remains true CUDA
++        # IPC without increasing the persistent bucket allocation.
++        transfer_weight = weight
++        if self.buffer is not None and weight.device != self.buffer.device:
++            transfer_weight = weight.to(self.buffer.device, non_blocking=True)
++            get_torch_device().synchronize()
++        handle = reduce_tensor(transfer_weight)
+         bucket_meta: dict[str, TensorMetadata] = {}
+         bucket_meta[name] = {
+             "name": name,
+-            "shape": weight.shape,
+-            "dtype": weight.dtype,
++            "shape": transfer_weight.shape,
++            "dtype": transfer_weight.dtype,
+             "offset": 0,
+             "handle": handle,
+         }
+--- a/verl/workers/engine/fsdp/transformer_impl.py
++++ b/verl/workers/engine/fsdp/transformer_impl.py
+@@ -924,6 +924,7 @@
+         use_remove_padding = tu.get_non_tensor_data(data=micro_batch, key="use_remove_padding", default=True)
+         pad_mode = tu.get_non_tensor_data(data=micro_batch, key="pad_mode", default=DatasetPadMode.NO_PADDING)
+         use_fused_kernels = tu.get_non_tensor_data(data=micro_batch, key="use_fused_kernels", default=False)
++        calculate_entropy = tu.get_non_tensor_data(data=micro_batch, key="calculate_entropy", default=False)
+         temperature = micro_batch["temperature"]
+         temperature_item = temperature
+         if use_fused_kernels:
+@@ -1050,6 +1051,9 @@
+         if use_fused_kernels:
+             extra_args["temperature"] = temperature_item
+             extra_args["return_dict"] = True
++            model_config = getattr(getattr(self.module, "module", self.module), "config", None)
++            if getattr(model_config, "model_type", None) == "qwen3_5":
++                extra_args["calculate_entropy"] = calculate_entropy
+             if use_remove_padding:
+                 # We have already computed `input_ids_rmpad_rolled` from the *full*
+                 # global sequence and (when SP>1) SP-sliced it. Pass it into the model
+@@ -1091,7 +1095,8 @@
+             if use_fused_kernels:
+                 # temperature is singleton
+                 log_probs = output.log_probs.squeeze(0)  # (total_nnz,)
+-                entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
++                if calculate_entropy:
++                    entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
+ 
+                 # When the fused kernel also computed top-K distillation
+                 # (veomni's chunk_topk_distill path), extract the per-token
+@@ -1184,11 +1189,31 @@
+                 raise NotImplementedError(f"pad_mode {pad_mode} not implemented")
+ 
+         else:  # not using rmpad and no ulysses sp
+-            response_length = tu.get_non_tensor_data(data=micro_batch, key="max_response_length", default=1024)
+             if use_fused_kernels:
+-                log_probs = output.log_probs[:, -response_length - 1 : -1]
+-                entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
++                if pad_mode == DatasetPadMode.NO_PADDING:
++                    cu_seqlens = input_ids.offsets()
++                    seq_lengths = cu_seqlens.diff()
++                    starts = torch.zeros_like(seq_lengths, dtype=torch.int64)
+ 
++                    # The fused model sees a dense padded batch, but PPO's
++                    # no_padding_2_padding contract consumes one flat value per
++                    # real prompt/response token.  Match the eager branch below
++                    # instead of returning a padded response-only slice.
++                    log_probs = torch.nested.narrow(
++                        output.log_probs, 1, starts, seq_lengths, layout=torch.jagged
++                    )
++                    log_probs_rmpad = torch.cat([tensor for tensor in log_probs.unbind()])
++                    log_probs = torch.nested.nested_tensor_from_jagged(log_probs_rmpad, cu_seqlens)
++
++                    if calculate_entropy:
++                        entropy = torch.nested.narrow(
++                            output.entropy, 1, starts, seq_lengths, layout=torch.jagged
++                        )
++                        entropy_rmpad = torch.cat([tensor for tensor in entropy.unbind()])
++                        entropy = torch.nested.nested_tensor_from_jagged(entropy_rmpad, cu_seqlens)
++                else:
++                    raise NotImplementedError(f"pad_mode {pad_mode} not implemented")
++
+             else:
+                 logits = output.logits  # (bsz, response_length, vocab_size)
+                 temperature = output_args["temperature"]  # (bsz,)
+--- a/verl/models/transformers/qwen3_5.py
++++ b/verl/models/transformers/qwen3_5.py
+@@ -206,6 +206,7 @@
+     labels: Optional[torch.LongTensor] = None,
+     temperature: float = 1.0,
+     shift_labels: Optional[torch.LongTensor] = None,
++    calculate_entropy: bool = True,
+     **kwargs,
+ ) -> "Qwen3_5CausalLMOutputForPPO":
+     from verl.utils.experimental.torch_functional import FusedLinearForPPO
+@@ -240,6 +241,7 @@
+         vocab_weights=vocab_weights,
+         input_ids=rolled_labels,
+         temperature=temperature,
++        calculate_entropy=calculate_entropy,
+     )
+     return Qwen3_5CausalLMOutputForPPO(
+         log_probs=log_probs,
+--- a/verl/utils/experimental/torch_functional.py
++++ b/verl/utils/experimental/torch_functional.py
+@@ -29,13 +29,16 @@
+     vocab_weights: torch.FloatTensor,
+     input_ids: torch.LongTensor,
+     temperature: float = 1.0,
+-) -> tuple[torch.FloatTensor, torch.FloatTensor]:
++    calculate_entropy: bool = True,
++) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+     logits = (hidden_states @ vocab_weights.t()) / temperature
+     orig_dtype = logits.dtype
+     logits = logits.to(torch.float32)
+ 
+-    probs = logits.softmax(dim=-1)
+-    entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
++    entropy = None
++    if calculate_entropy:
++        probs = logits.softmax(dim=-1)
++        entropy = torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
+ 
+     if _FLASH_ATTN_CROSS_ENTROPY_AVAILABLE:
+         per_token_entropy_loss = cross_entropy_loss(logits, input_ids)[0]
+@@ -46,7 +49,9 @@
+         token_log_probs = log_probs.gather(-1, input_ids.unsqueeze(-1)).squeeze(-1)
+ 
+     assert token_log_probs.dtype == torch.float32
+-    return token_log_probs, entropy.to(orig_dtype)
++    if entropy is not None:
++        entropy = entropy.to(orig_dtype)
++    return token_log_probs, entropy
+ 
+ 
+ def _fused_linear_for_ppo_bwd(
+@@ -93,7 +98,8 @@
+         input_ids: torch.LongTensor,
+         temperature: float = 1.0,
+         chunk_size: int = 512,
+-    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
++        calculate_entropy: bool = True,
++    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+         ctx.set_materialize_grads(False)
+ 
+         # Cast to a 2D tensor of the shape [T, D] for ease of working
+@@ -113,7 +119,9 @@
+         output_requires_grad = hidden_states.requires_grad or vocab_weights.requires_grad
+         # Logits are upcasted to fp32 before computing log_probs, which are also fp32
+         log_probs = torch.zeros(T, device=hidden_states.device, dtype=torch.float32, requires_grad=output_requires_grad)
+-        entropy = hidden_states.new_zeros(T, requires_grad=output_requires_grad)
++        entropy = None
++        if calculate_entropy:
++            entropy = hidden_states.new_zeros(T, requires_grad=output_requires_grad)
+ 
+         # Perform forward one chunk at a time
+         for chunk_start in range(0, T, chunk_size):
+@@ -124,14 +132,17 @@
+                 vocab_weights=vocab_weights,
+                 input_ids=input_ids[chunk_start:chunk_end],
+                 temperature=temperature,
++                calculate_entropy=calculate_entropy,
+             )
+             log_probs[chunk_start:chunk_end] = chunk_log_probs
+-            entropy[chunk_start:chunk_end] = chunk_entropy
++            if calculate_entropy:
++                entropy[chunk_start:chunk_end] = chunk_entropy
+ 
+         # Cast the output back to the original input dimension
+         if orig_ndim == 3:
+             log_probs = log_probs.view(orig_batch_size, -1)
+-            entropy = entropy.view(orig_batch_size, -1)
++            if calculate_entropy:
++                entropy = entropy.view(orig_batch_size, -1)
+ 
+         ctx.save_for_backward(hidden_states, vocab_weights, input_ids)
+         ctx.orig_batch_size = orig_batch_size
+@@ -138,6 +149,7 @@
+         ctx.orig_ndim = orig_ndim
+         ctx.temperature = temperature
+         ctx.chunk_size = chunk_size
++        ctx.calculate_entropy = calculate_entropy
+ 
+         return log_probs, entropy
+ 
+@@ -178,6 +190,24 @@
+             if dentropy is not None:
+                 chunk_dentropy = dentropy[chunk_start:chunk_end]
+ 
++            if not ctx.calculate_entropy:
++                assert chunk_dlog_probs is not None
++                hidden = hidden_states[chunk_start:chunk_end]
++                labels = input_ids[chunk_start:chunk_end]
++                logits = hidden @ vocab_weights.t() / temperature
++                orig_dtype = logits.dtype
++                probs = logits.float().softmax(dim=-1)
++                del logits
++                scale = chunk_dlog_probs.float().unsqueeze(-1)
++                probs.mul_(-scale)
++                probs.scatter_add_(-1, labels.unsqueeze(-1), scale)
++                dlogits = probs.to(orig_dtype) / temperature
++                if hidden_states.requires_grad:
++                    dhidden_states[chunk_start:chunk_end] += dlogits @ vocab_weights
++                if vocab_weights.requires_grad:
++                    dvocab_weights += dlogits.t() @ hidden
++                continue
++
+             h, v = _fused_linear_for_ppo_bwd(
+                 dlog_probs=chunk_dlog_probs,
+                 dentropy=chunk_dentropy,
+@@ -203,6 +233,7 @@
+             None,  # input_ids
+             None,  # temperature
+             None,  # chunk_size
++            None,  # calculate_entropy
+         )
+ 
+ 
+@@ -218,7 +249,8 @@
+         vocab_weights: torch.FloatTensor,
+         input_ids: torch.LongTensor,
+         temperature: float = 1.0,
+-    ) -> tuple[torch.FloatTensor, torch.FloatTensor]:
++        calculate_entropy: bool = True,
++    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+         input_ids = input_ids.to(torch.int64)
+         return FusedLinearForPPOFunction.apply(
+             hidden_states,
+@@ -226,4 +258,5 @@
+             input_ids,
+             temperature,
+             self.chunk_size,
++            calculate_entropy,
+         )
