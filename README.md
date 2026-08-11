@@ -2,9 +2,9 @@
 
 <div align="center">
 
-**面向长程工具调用 Agent 的可审计后训练工具箱**
+**面向长程工具调用智能体的可审计后训练工具箱**
 
-Action-only SFT · online GRPO · public-state verification · gated promotion
+只训练工具调用动作 · 在线 GRPO · 公开状态检查 · 有条件的实验晋级
 
 <br />
 
@@ -37,17 +37,17 @@ Action-only SFT · online GRPO · public-state verification · gated promotion
 
 ## 项目速览
 
-| 🔎 行为层：Agent 是否正确行动？ | 🧭 训练层：RL 是否稳定运行？ | 📊 证据层：结果是否值得相信？ |
+| 🔎 行为层：智能体是否正确行动？ | 🧭 训练层：强化学习是否稳定运行？ | 📊 证据层：结果是否值得相信？ |
 | --- | --- | --- |
-| 公开状态 Process Verifier 检查工具合法性、新证据、规格选择和购买就绪。 | veRL / vLLM 多轮 rollout，动态采样与过程信用只在训练侧提供补充信号。 | 冻结 task_id、配对汇总、失败 receipt 与晋级 gate 构成可复核证据链。 |
+| 公开状态检查器检查工具合法性、新证据、规格选择和购买就绪。 | veRL / vLLM 多轮采样，动态采样与过程信用只在训练侧提供补充信号。 | 冻结任务编号、配对汇总、失败记录与晋级条件构成可复核证据链。 |
 
 ### 核心能力
 
-- **可执行行为的 SFT**：仅对 Assistant 的工具调用动作计算损失，避免模型学习复述环境 Observation。
-- **在线 GRPO 训练适配**：基于 `verl==0.8.0` 接入多轮 Agent Loop、工具定义、Reward 回传与 vLLM rollout。
-- **确定性过程验证器**：只读取 Actor 可见的 Observation 与公开工具调用，检查非法动作、重复无进展、候选打开、规格推进和购买就绪；不读取隐藏目标或 Reward 内部细节。
-- **受控实验治理**：提供 runtime preflight、失败重放、Canary gate 与无人值守晋级状态机，避免“退出码为 0 即算成功”的不可靠实验结论。
-- **可审计评测口径**：结果按固定 task_id 对齐，基础模型、SFT 和 GRPO 使用同一冻结任务集比较；基础设施失败仍保留在分母中。
+- **可执行行为的监督微调（SFT）**：仅对助手发出的工具调用动作计算损失，避免模型学习复述环境观测。
+- **在线 GRPO 训练适配**：基于 `verl==0.8.0` 接入多轮智能体循环、工具定义、终局奖励回传与 vLLM 采样。
+- **确定性公开状态检查器**：只读取智能体可见的观测与公开工具调用，检查非法动作、重复无进展、候选打开、规格推进和购买就绪；不读取隐藏目标或终局奖励内部细节。
+- **受控实验治理**：提供运行前检查、失败重放、试运行检查和无人值守晋级状态机，避免把“进程退出码为 0”误当作实验成功。
+- **可审计评测口径**：结果按固定任务编号对齐，基础模型、监督微调和 GRPO 使用同一冻结任务集比较；基础设施失败仍保留在分母中。
 
 ## 为什么还需要这个仓库？
 
@@ -55,9 +55,9 @@ Action-only SFT · online GRPO · public-state verification · gated promotion
 
 | 维度 | [完整端到端项目](https://github.com/YYHDBL/shopping-grpo-longhorizon) | 本仓库的差异化重点 |
 | --- | --- | --- |
-| 目标 | 复现 Baseline → SFT → GRPO → Final-200 的完整路线 | 将训练控制、过程信号与可审计运行机制模块化 |
+| 目标 | 复现基线 → 监督微调 → GRPO → 冻结 200 题测试的完整路线 | 将训练控制、过程信号与可审计运行机制模块化 |
 | Agent 能力 | 搜索、详情核验、变体选择、购买/终止 | 将“是否在正确地推进任务”编码为仅依赖公开状态的 verifier |
-| 在线 RL | veRL + vLLM 多轮 rollout | 动态采样、GraphGPO / GiGPO-lite、失败重放与预注册 gate |
+| 在线强化学习 | veRL + vLLM 多轮采样 | 动态采样、项目实现的过程信用模块（代码名 `GraphGPO-lite` / `GiGPO-lite`）、失败重放与预注册晋级条件 |
 | 实验完成定义 | 训练与评测输出结果 | `READY → RUNNING → COMPLETE/FAILED → ANALYZED → PROMOTED` 的证据链 |
 | 公开内容 | 包含完整环境与数据接入说明 | 不分发受限环境、数据、权重或原始轨迹，只发布项目自有工程层 |
 
@@ -67,65 +67,75 @@ Action-only SFT · online GRPO · public-state verification · gated promotion
 
 ```mermaid
 flowchart LR
-    A[Teacher rollouts] --> B[Reward replay & filtering]
-    B --> C[Action-only SFT]
-    C --> D[LoRA SFT adapter]
-    D --> E[Online GRPO with veRL]
-    F[Tool environment] --> E
-    E --> G[Frozen evaluation]
-    H[Public-state verifier] --> E
+    A[教师轨迹] --> B[奖励轨迹回放与筛选]
+    B --> C[仅训练工具调用动作]
+    C --> D[LoRA 适配器]
+    D --> E[基于 veRL 的在线 GRPO]
+    F[工具环境] --> E
+    E --> G[冻结测试集评测]
+    H[公开状态检查器] --> E
     H --> G
-    G --> I[Paired metric comparison]
+    G --> I[配对指标比较]
 ```
 
 训练目标与评测目标分层处理：
 
 | 层级 | 作用 | 边界 |
 | --- | --- | --- |
-| 终局 Reward | 判断购买/终止结果与约束满足 | 环境定义，训练代码不改写 |
-| Process Verifier | 记录公开状态下的动作质量与过程信号 | 不访问隐藏目标，不替代终局 Reward |
-| Trajectory Judge | 离线评测轨迹的策略与证据质量 | 不参与在线训练 |
+| 环境终局奖励（Reward） | 判断购买/终止结果与约束满足 | 由环境定义，本项目不改写 |
+| 公开状态检查器（代码模块名 `Process Verifier`） | 记录公开状态下的动作质量与过程信号 | 不访问隐藏目标，不替代环境终局奖励 |
+| 轨迹评审器（代码模块名 `Trajectory Judge`） | 离线评测轨迹的策略与证据质量 | 不参与在线训练 |
 
 ## 实验结果
 
-下表是同一冻结 200 题上的一次确定性 rollout 对比。它用于审计已完成实验，**不表示采样方差、统计显著性或线上效果**。
+下表是同一冻结 200 题上的一次确定性多轮采样对比。它用于审计已完成实验，**不表示采样方差、统计显著性或线上效果**。
 
-| 阶段 | 完成率 | 严格成功率 | 购买成功率 | 平均终局 Reward | Guard 拒绝数 |
+| 阶段 | 完成率 | 严格成功率 | 购买成功率 | 平均终局奖励 | 动作守卫拒绝数 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.5-2B Baseline | 18.0% | 0.0% | 0.0% | -0.1105 | 752 |
+| Qwen3.5-2B 基线 | 18.0% | 0.0% | 0.0% | -0.1105 | 752 |
 | LoRA SFT | 96.5% | 60.5% | 60.5% | 0.4729 | 52 |
 | GRPO step 100 | 96.5% | **62.0%** | **62.5%** | **0.5158** | **38** |
 
 <div align="center">
 
-<sub><b>同一冻结集 · 固定分母 · 单次确定性 rollout · 聚合结果可在 <a href="results/">results/</a> 核验</b></sub>
+<sub><b>同一冻结集 · 固定分母 · 单次确定性采样 · 聚合结果可在 <a href="results/">results/</a> 核验</b></sub>
 
 </div>
 
-在该固定口径下，GRPO 比 SFT 多 3 个严格成功任务，并减少了错误购买、循环与 Guard 拒绝。完整聚合结果见 [`results/`](results/)，评测口径见 [`docs/evaluation.md`](docs/evaluation.md)。
+在该固定口径下，GRPO 比监督微调多 3 个严格成功任务，并减少了错误购买、循环与动作守卫拒绝。完整聚合结果见 [`results/`](results/)，评测口径见 [`docs/evaluation.md`](docs/evaluation.md)。
+
+## 术语说明
+
+为避免把项目内部代码名误写成行业通用算法，这里明确区分三类名称：
+
+- **外部项目或标准名称**：`veRL`、`vLLM`、`LoRA`、`GRPO`、`Qwen3.5`、`A100` 和 `ShopSimulator` 均指向其公开项目、论文或硬件名称。
+- **描述性名称**：本文所说的“公开状态检查器”是对 `process_verifier.py` 功能的中文描述；它只依据智能体能看到的状态检查动作，不是一个声称已有统一定义的行业标准组件。
+- **项目内部实现名**：`GraphGPO-lite`、`GiGPO-lite` 和 `Agent-ProGRPO` 是本仓库代码与实验记录中的实现名，用于区分不同的过程信用/优势估计实现；它们不是本项目宣称的新通用算法，也不代表上游论文的原样复现。`Final-200` 在文档中仅表示“固定的 200 道测试任务”，不表示新的模型或算法。
+
+README 中保留英文，主要是为了与代码目录、依赖包和公开论文保持可检索的一致性；第一次出现时均给出中文解释。
 
 ## 核心模块
 
 ```text
 src/shopping_grpo/
-├── collection/             # 教师轨迹采集与 Action-only SFT 数据构建
-├── environment/            # 工具、Observation、动作与上下文适配
+├── collection/             # 教师轨迹采集与工具调用动作数据构建
+├── environment/            # 工具、观测、动作与上下文适配
 ├── evaluation/             # 轨迹规范化、配对比较、评测契约与工件校验
 └── training/
     ├── sft/                # LoRA SFT 数据集处理
-    └── grpo/               # veRL adapter、GRPO / GraphGPO / GiGPO-lite
-        ├── adapter/        # Agent loop、session 与 tools bridge
+    └── grpo/               # veRL 适配层、GRPO 及项目内部过程信用实现
+        ├── adapter/        # 智能体循环、会话与工具桥接
         ├── process_verifier.py
         ├── dynamic_sampling.py
         ├── graphgpo.py
         └── gigpo.py
 
 scripts/                    # 采集、训练、环境检查、评测与晋级控制器
-configs/                    # Agent loop、工具、GRPO 与实验契约
+configs/                    # 智能体循环、工具、GRPO 与实验契约
 patches/                    # 有版本与 SHA 约束的窄范围 veRL 兼容补丁
 tests/                      # 无专有环境即可执行的公开单元测试
 results/                    # 聚合指标；不含原始轨迹和任务数据
-docs/                       # SFT、GRPO、Reward 与评测设计说明
+docs/                       # 监督微调、GRPO、奖励与评测设计说明
 ```
 
 ## 快速开始：CPU 开发与测试
@@ -198,7 +208,7 @@ PYTHONPATH=.:src python scripts/unattended_promotion_controller.py --help
 
 - ShopSimulator 源码快照、商品目录、检索索引和私有 TaskFacts；
 - 教师原始轨迹、训练/验证 JSONL 或 Parquet、模型权重与 checkpoint；
-- 原始 rollout、运行日志、API 凭证、服务器地址和机器专属 launch receipt。
+- 原始采样轨迹、运行日志、API 凭证、服务器地址和机器专属启动记录。
 
 `results/` 只保留可读的聚合统计。若要复现完整流程，请从数据与环境权利方按其原始许可证和条款获取依赖；详细规则见 [`PUBLIC_DATA_POLICY.md`](PUBLIC_DATA_POLICY.md)。
 
@@ -208,13 +218,13 @@ PYTHONPATH=.:src python scripts/unattended_promotion_controller.py --help
 
 1. 不提交 token、密钥、模型权重、环境数据或运行日志；
 2. 新实验附带配置、输入哈希、代码提交与失败判定口径；
-3. 不用隐藏目标、真实终局 Reward 细节或 LLM Judge 结果塑造过程奖励；
+3. 不用隐藏目标、真实终局奖励细节或大语言模型评审结果塑造过程奖励；
 4. 新增行为应有公开可运行的测试或最小复现。
 
 ## 致谢
 
 - [veRL](https://github.com/volcengine/verl)：在线 RL 与 Agent 训练框架；
-- [vLLM](https://github.com/vllm-project/vllm)：高吞吐 rollout 推理；
+- [vLLM](https://github.com/vllm-project/vllm)：高吞吐多轮采样推理；
 - [ShopSimulator](https://github.com/ShopAgent-Team/ShopSimulator)：本项目评测所对接的上游购物 Agent 环境。
 
 本仓库仅发布项目自有的适配、训练、评测与实验治理代码；不再分发上述上游环境或数据。
