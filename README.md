@@ -11,9 +11,13 @@ Action-only SFT · online GRPO · public-state verification · gated promotion
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![veRL](https://img.shields.io/badge/veRL-0.8.0-0E8A16)](https://github.com/volcengine/verl)
 [![vLLM](https://img.shields.io/badge/vLLM-0.17.0-5A45FF)](https://github.com/vllm-project/vllm)
+[![Public unit tests](https://github.com/go99further/shopping-agent-posttraining/actions/workflows/tests.yml/badge.svg)](https://github.com/go99further/shopping-agent-posttraining/actions/workflows/tests.yml)
+[![GitHub stars](https://img.shields.io/github/stars/go99further/shopping-agent-posttraining?style=flat&logo=github)](https://github.com/go99further/shopping-agent-posttraining/stargazers)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 [完整端到端项目](https://github.com/YYHDBL/shopping-grpo-longhorizon) · [文字版说明](https://yyhdbl.github.io/)
+
+<sub>阅读路径：<a href="#项目速览">项目速览</a> · <a href="#方法概览">方法概览</a> · <a href="#实验结果">实验结果</a> · <a href="#快速开始cpu-开发与测试">快速开始</a> · <a href="#数据环境与公开边界">公开边界</a></sub>
 
 </div>
 
@@ -28,7 +32,16 @@ Action-only SFT · online GRPO · public-state verification · gated promotion
 
 它不是在线购物产品，也不包含模型权重或商品数据；而是一套可接入 ShopSimulator 风格环境的后训练、评测与实验治理实现。
 
-## 项目亮点
+> [!TIP]
+> 如果你只花一分钟阅读：看下方三张能力卡片、200 题冻结评测和 `READY → ... → PROMOTED` 的实验证据链；它们分别回答**项目做什么、验证到什么、为什么可信**。
+
+## 项目速览
+
+| 🔎 行为层：Agent 是否正确行动？ | 🧭 训练层：RL 是否稳定运行？ | 📊 证据层：结果是否值得相信？ |
+| --- | --- | --- |
+| 公开状态 Process Verifier 检查工具合法性、新证据、规格选择和购买就绪。 | veRL / vLLM 多轮 rollout，动态采样与过程信用只在训练侧提供补充信号。 | 冻结 task_id、配对汇总、失败 receipt 与晋级 gate 构成可复核证据链。 |
+
+### 核心能力
 
 - **可执行行为的 SFT**：仅对 Assistant 的工具调用动作计算损失，避免模型学习复述环境 Observation。
 - **在线 GRPO 训练适配**：基于 `verl==0.8.0` 接入多轮 Agent Loop、工具定义、Reward 回传与 vLLM rollout。
@@ -82,6 +95,12 @@ flowchart LR
 | Qwen3.5-2B Baseline | 18.0% | 0.0% | 0.0% | -0.1105 | 752 |
 | LoRA SFT | 96.5% | 60.5% | 60.5% | 0.4729 | 52 |
 | GRPO step 100 | 96.5% | **62.0%** | **62.5%** | **0.5158** | **38** |
+
+<div align="center">
+
+<sub><b>同一冻结集 · 固定分母 · 单次确定性 rollout · 聚合结果可在 <a href="results/">results/</a> 核验</b></sub>
+
+</div>
 
 在该固定口径下，GRPO 比 SFT 多 3 个严格成功任务，并减少了错误购买、循环与 Guard 拒绝。完整聚合结果见 [`results/`](results/)，评测口径见 [`docs/evaluation.md`](docs/evaluation.md)。
 
